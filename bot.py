@@ -28,6 +28,7 @@ class Registration(StatesGroup):
     water_consumed = State()
     calories_consumed = State()
     water_goal = State()
+    calories_burned = State()
 
 class Food(StatesGroup):
     food_calorias = State()
@@ -46,9 +47,11 @@ async def cmd_help(message: types.Message):
         "Напиши мне /start, чтобы начать работу.\n"
         "Напиши мне /set_profile, чтобы зарегистрироваться или актуализировать данные.\n"
         "Напиши мне /help, чтобы получить помощь.\n"
-        "Напиши мне /get_profile, чтобы получить информацию о себе."
-        "Напиши мне /log_water <количество в мл>, чтобы зафиксировать количество воды, которое вы выпили."
-        "Напиши мне /log_food <название продукта>, чтобы зафиксировать количество продукта, которое вы употребили."
+        "Напиши мне /get_profile, чтобы получить информацию о себе.\n"
+        "Напиши мне /log_water <количество в мл>, чтобы зафиксировать количество воды, которое вы выпили.\n"
+        "Напиши мне /log_food <название продукта>, чтобы зафиксировать количество продукта, которое вы употребили.\n"
+        "Напиши мне /log_workout <тип тренировки> <количество в минутах>, чтобы зафиксировать количество калорий, которое вы сожгли за тренировку.\n"
+        "Напиши мне /check_progress, чтобы получить информацию о вашем текущем прогрессе."
     )
 
 @dp.message(Command("set_profile"))
@@ -97,6 +100,7 @@ async def process_calories_goal(message: types.Message, state: FSMContext):
     await state.update_data(water_goal=calculate_water_goal(int(data['weight']), int(data['active_minutes'])))
     await state.update_data(water_consumed=0)
     await state.update_data(calories_consumed=0)
+    await state.update_data(calories_burned=0)
 
     storage[message.from_user.id] = await state.get_data()
     await message.answer("Вы успешно зарегистрированы!")
@@ -150,6 +154,43 @@ async def cmd_log_food(message: types.Message, state: FSMContext):
     await state.update_data(food_calories=food_info['calories'])
     await message.answer(food_info['info'] + "\nВведите количество продукта в граммах:")
     await state.set_state(Food.food_quantity)
+
+@dp.message(Command("log_workout"))
+async def cmd_log_workout(message: types.Message, state: FSMContext):
+    parts = message.text.strip().split()
+    if len(parts) != 3 or not parts[2].isdigit():
+        await message.answer("Используйте формат: log_workout <тип тренировки> <количество в минутах>")
+        return
+    workout_minutes = int(parts[2])
+    workout_calories = 100 # дефолтное значение
+    if parts[1] == "бег":
+        workout_calories = 200
+    elif parts[1] == "велосипед":
+        workout_calories = 150
+    elif parts[1] == "плавание":
+        workout_calories = 150
+    elif parts[1] == "ходьба":
+        workout_calories = 50
+    
+    calories_burned = workout_calories * workout_minutes / 30
+    storage[message.from_user.id]['calories_burned'] += calories_burned
+
+    await message.answer(f"Вы сожгли {calories_burned} ккал за {workout_minutes} минут тренировки: {parts[1]}, выпейте дополнительно {calories_burned * 2/3:.2f} мл воды.")
+
+@dp.message(Command("check_progress"))
+async def cmd_check_progress(message: types.Message):
+    calories_consumed = storage[message.from_user.id]['calories_consumed']
+    calories_goal = storage[message.from_user.id]['calories_goal']
+    calories_burned = storage[message.from_user.id]['calories_burned']
+
+    water_consumed = storage[message.from_user.id]['water_consumed']
+    water_goal = storage[message.from_user.id]['water_goal']
+
+    answer = f"Прогресс по калориям: {calories_consumed}/{calories_goal} ккал\nПрогресс по воде: {water_consumed}/{water_goal} мл\n"
+    answer += f"Вы сожгли дополнительно {calories_burned} ккал за тренировку, за это также нужно выпить {calories_burned * 2/3:.2f} мл воды.\n"
+    answer += f"Осталось выпить {max(0, water_goal + calories_burned * 2/3 - water_consumed):.2f} мл воды, употребить {max(0, calories_goal + calories_burned - calories_consumed):.2f} ккал, чтобы достичь цели."
+    await message.answer(answer)
+
 
 @dp.message(Food.food_quantity)
 async def process_food_quantity(message: types.Message, state: FSMContext):
