@@ -1,5 +1,8 @@
 import os
+import io
 import aiogram
+import numpy as np
+import matplotlib.pyplot as plt
 from aiogram import types
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -8,6 +11,8 @@ from dotenv import load_dotenv
 
 from utils import calculate_calories_goal, calculate_water_goal
 from clients import get_weather, get_food_info
+
+plt.switch_backend('Agg')
 
 load_dotenv()
 
@@ -51,7 +56,10 @@ async def cmd_help(message: types.Message):
         "Напиши мне /log_water <количество в мл>, чтобы зафиксировать количество воды, которое вы выпили.\n"
         "Напиши мне /log_food <название продукта>, чтобы зафиксировать количество продукта, которое вы употребили.\n"
         "Напиши мне /log_workout <тип тренировки> <количество в минутах>, чтобы зафиксировать количество калорий, которое вы сожгли за тренировку.\n"
-        "Напиши мне /check_progress, чтобы получить информацию о вашем текущем прогрессе."
+        "Напиши мне /check_progress, чтобы получить информацию о вашем текущем прогрессе.\n"
+        "Напиши мне /stats_calories, чтобы получить информацию о вашем прогрессе по калориям.\n"
+        "Напиши мне /stats_water, чтобы получить информацию о вашем прогрессе по воде.\n"
+        "Напиши мне /recommendations, чтобы получить рекомендации по следующим действиям.\n"
     )
 
 @dp.message(Command("set_profile"))
@@ -94,10 +102,12 @@ async def process_calories_goal(message: types.Message, state: FSMContext):
     await state.update_data(calories_goal=message.text)
 
     data = await state.get_data()
+    temp = await get_weather(data.get('town', 'Город не указан'))
+    temp = temp['main'].get('temp', 0)
 
     if message.text == "auto":
         await state.update_data(calories_goal=calculate_calories_goal(int(data['weight']), int(data['height']), int(data['age']), int(data['active_minutes'])))
-    await state.update_data(water_goal=calculate_water_goal(int(data['weight']), int(data['active_minutes'])))
+    await state.update_data(water_goal=calculate_water_goal(int(data['weight']), int(data['active_minutes']), int(temp)))
     await state.update_data(water_consumed=0)
     await state.update_data(calories_consumed=0)
     await state.update_data(calories_burned=0)
@@ -205,12 +215,133 @@ async def process_food_quantity(message: types.Message, state: FSMContext):
     calories_consumed = storage[message.from_user.id]['calories_consumed']
     calories_goal = storage[message.from_user.id]['calories_goal']
     if calories_consumed > calories_goal:
-        await message.answer(f"Потребление зафиксировано - Вы употребили больше калорий на {calories_consumed - calories_goal} ккал. Пожалуйста, употребите меньше калорий.")
+        await message.answer(f"Потребление зафиксировано - Вы употребили больше калорий на {calories_consumed - calories_goal} ккал. Пожалуйста, употребляйте меньше.")
         return
     elif calories_consumed < calories_goal:
         await message.answer(f"Потребление зафиксировано - Осталось употребить {calories_goal - calories_consumed} ккал, чтобы достичь цели.")
         return
     await message.answer(f"Потребление зафиксировано - Вы достигли цели по калориям!")
+
+
+@dp.message(Command("stats_calories"))
+async def cmd_stats(message: types.Message):
+    data = storage.get(message.from_user.id)
+    if not data:
+        await message.answer("Профиль не найден. Пожалуйста, заполните данные с помощью /set_profile.")
+        return
+    
+    calories_goal = data['calories_goal']
+    diff = calories_goal * 0.2
+    calories_consumed = data['calories_consumed']
+
+    values = np.random.randint(calories_goal - diff, calories_goal + diff, size=6)
+    x_labels = [f'День {i+1}' for i in range(7)]
+    values = np.append(values, calories_consumed)
+
+    plt.figure(figsize=(8, 5))
+    # Просто для удобства выделим последний столбец в отличный от других цвет
+    bar_colors = ['skyblue'] * (len(x_labels) - 1) + ['orange']
+    plt.bar(x_labels, values, color=bar_colors, edgecolor='navy', alpha=0.7)
+    plt.title('История потребления калорий за последние 7 дней', fontsize=14, fontweight='bold')
+    plt.xlabel('День', fontsize=12)
+    plt.ylabel('Калории', fontsize=12)
+
+    # Добавим цель -- пунктирную линию на уровне calories_goal
+    plt.grid(axis='y', linestyle='--', alpha=0.7)
+    plt.axhline(y=calories_goal, color='red', linestyle='--', linewidth=2, label='Цель по калориям')
+    plt.tight_layout()
+
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=75)
+    plt.close()
+    buf.seek(0)
+
+    try:
+        photo = types.BufferedInputFile(buf.getvalue(), filename="histogram.png")
+        print('zzz', len(buf.getvalue()))
+        
+        await message.answer_photo(
+            photo=photo,
+            caption="История потребления калорий за последние 7 дней"
+        )
+    except Exception as e:
+        await message.answer(f"Не удалось отправить график: {str(e)}")
+    finally:
+        buf.close()
+
+@dp.message(Command("stats_water"))
+async def cmd_stats_water(message: types.Message):
+    data = storage.get(message.from_user.id)
+    if not data:
+        await message.answer("Профиль не найден. Пожалуйста, заполните данные с помощью /set_profile.")
+        return
+    water_goal = data['water_goal']
+    water_consumed = data['water_consumed']
+    diff = water_goal * 0.2
+    values = np.random.randint(water_goal - diff, water_goal + diff, size=6)
+    x_labels = [f'День {i+1}' for i in range(7)]
+    values = np.append(values, water_consumed)
+
+    plt.figure(figsize=(8, 5))
+    bar_colors = ['skyblue'] * (len(x_labels) - 1) + ['orange']
+    plt.bar(x_labels, values, color=bar_colors, edgecolor='navy', alpha=0.7)
+    plt.title('История потребления воды за последние 7 дней', fontsize=14, fontweight='bold')
+
+    plt.grid(axis='y', linestyle='--', alpha=0.7)
+    plt.axhline(y=water_goal, color='red', linestyle='--', linewidth=2, label='Цель по воде')
+    plt.tight_layout()
+
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=75)
+    plt.close()
+
+    buf.seek(0)
+
+    try:
+        photo = types.BufferedInputFile(buf.getvalue(), filename="histogram.png")
+        print('zzz', len(buf.getvalue()))
+        
+        await message.answer_photo(
+            photo=photo,
+            caption="История потребления воды за последние 7 дней"
+        )
+    except Exception as e:
+        await message.answer(f"Не удалось отправить график: {str(e)}")
+    finally:
+        buf.close()
+
+
+@dp.message(Command("recommendations"))
+async def cmd_recommendations(message: types.Message):
+    data = storage.get(message.from_user.id)
+    if not data:
+        await message.answer("Профиль не найден. Пожалуйста, заполните данные с помощью /set_profile.")
+        return
+    calories_consumed = data['calories_consumed']
+    calories_goal = data['calories_goal']
+    if calories_consumed == calories_goal:
+        await message.answer("Вы достигли цели по калориям! Проверьте прогресс по воде с помощью /check_progress")
+        return
+    if calories_consumed < calories_goal:
+        diff = calories_goal - calories_consumed
+        if diff < 100:
+            await message.answer("Вы близки к цели по калориям! Можете съесть йогурт, 79 ккал, или банан, 89 ккал")
+            return
+        if diff < 300:
+            await message.answer("Вы не так далеки от цели по калориям! Можете съесть 2 яйца, 150 ккал")
+            return
+        await message.answer("Вы далеки от цели по калориям! Можете позволить себе бургер, 500 ккал")
+        return
+    if calories_consumed > calories_goal:
+        diff = calories_consumed - calories_goal
+        if diff < 100:
+            await message.answer("Вы немного превысили цель по калориям! Выйдите на получасовую прогулку")
+            return
+        if diff < 300:
+            await message.answer("Вы сильно превысили цель по калориям! Выйдите на получасовую пробежку")
+            return
+        await message.answer("Вы сегодня слишком много себе позволяли! Займитесь длительной пробежкой и не повторяйте таких же ошибок")
+        return
 
 async def main():
     await dp.start_polling(bot)
